@@ -12,7 +12,7 @@ import urllib.parse
 
 # Lấy cấu hình từ biến môi trường của Render
 MCP_URL = os.environ.get("MCP_URL", "wss://api.xiaozhi.me/mcp/?token=YOUR_TOKEN_HERE")
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://d-n-g66p.onrender.com")
 
 app = FastAPI()
 
@@ -116,10 +116,15 @@ async def handle_mcp():
                             
                             print(f"-> [MCP Call] Đã nhận lệnh phát bài: {query}")
                             encoded_query = urllib.parse.quote(query)
-                            base_url = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else "http://localhost:10000"
-                            audio_stream_url = f"{base_url}/play?q={encoded_query}"
                             
-                            reply_text = f"Đã tìm thấy bài hát '{query}'. Đang phát từ YouTube lên loa cho anh."
+                            # Đường dẫn link nhạc công cộng của Render
+                            domain = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else "https://d-n-g66p.onrender.com"
+                            if not domain.startswith("http"):
+                                domain = "https://" + domain
+                            audio_stream_url = f"{domain}/play?q={encoded_query}"
+                            
+                            # Đưa đường dẫn URL âm thanh vào kết quả cho XiaoZhi nhận dạng link nhạc
+                            reply_text = f"Đã tìm thấy bài hát '{query}'. Link âm thanh stream: {audio_stream_url}"
 
                             res = {
                                 "jsonrpc": "2.0", "id": req_id,
@@ -129,6 +134,7 @@ async def handle_mcp():
                                 }
                             }
                             await ws.send(json.dumps(build_response(res)))
+                            print(f"-> [MCP Response Sent] Đã gửi link nhạc: {audio_stream_url}")
 
                     except Exception as e:
                         print(f"Lỗi xử lý tin nhắn: {e}")
