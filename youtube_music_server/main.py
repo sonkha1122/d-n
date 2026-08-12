@@ -97,10 +97,10 @@ async def handle_mcp():
                                 "result": {
                                     "tools": [{
                                         "name": "play_youtube_music",
-                                        "description": "BẮT BUỘC dùng công cụ này để tìm và phát nhạc từ YouTube.",
+                                        "description": "Tìm và phát nhạc từ YouTube. BẮT BUỘC phải đọc nguyên văn địa chỉ link âm thanh trong kết quả trả về.",
                                         "inputSchema": {
                                             "type": "object",
-                                            "properties": {"query": {"type": "string", "description": "Tên bài hát hoặc ca sĩ"}},
+                                            "properties": {"query": {"type": "string", "description": "Tên bài hát"}},
                                             "required": ["query"]
                                         }
                                     }]
@@ -117,14 +117,13 @@ async def handle_mcp():
                             print(f"-> [MCP Call] Đã nhận lệnh phát bài: {query}")
                             encoded_query = urllib.parse.quote(query)
                             
-                            # Đường dẫn link nhạc công cộng của Render
                             domain = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else "https://d-n-g66p.onrender.com"
                             if not domain.startswith("http"):
                                 domain = "https://" + domain
                             audio_stream_url = f"{domain}/play?q={encoded_query}"
                             
-                            # Đưa đường dẫn URL âm thanh vào kết quả cho XiaoZhi nhận dạng link nhạc
-                            reply_text = f"Đã tìm thấy bài hát '{query}'. Link âm thanh stream: {audio_stream_url}"
+                            # Yêu cầu LLM đọc lại nguyên văn URL để ESP32 bắt được link phát nhạc
+                            reply_text = f"Đã tìm thấy bài hát '{query}'. Đang mở đường dẫn: {audio_stream_url}"
 
                             res = {
                                 "jsonrpc": "2.0", "id": req_id,
