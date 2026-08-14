@@ -30,27 +30,53 @@ def fetch_youtube_stream_url(query):
 
 @app.get("/play")
 def play_music(q: str):
+    """
+    Endpoint được ESP32 gọi trực tiếp qua HTTP để stream nhạc.
+    Trả về OGG/Opus stream (ffmpeg -f ogg output) để OggDemuxer trên firmware parse được.
+    """
     title, audio_url = fetch_youtube_stream_url(q)
     if not audio_url:
         raise HTTPException(status_code=404, detail="Khong tim thay bai hat")
-    
-    print(f"-> 🎵 [LOA ESP32 DANG PHAT NHAC]: {title}")
+
+    print(f"-> 🎵 [STREAM] Bài: {title}")
+
+    # QUAN TRỌNG: Dùng -f ogg (OGG container) thay vì -f opus (raw)
+    # OggDemuxer trong firmware ESP32 cần OGG container với header OggS
+    # ffmpeg mặc định xuất 60ms frame với -f ogg và libopus
     ffmpeg_cmd = [
-        'ffmpeg', '-i', audio_url, '-ac', '1', '-ar', '24000',
-        '-acodec', 'libopus', '-b:a', '32k', '-f', 'opus', 'pipe:1'
+        'ffmpeg', '-i', audio_url,
+        '-ac', '1',             # Mono
+        '-ar', '24000',         # Sample rate 24kHz (khớp với AUDIO_OUTPUT_SAMPLE_RATE)
+        '-acodec', 'libopus',
+        '-b:a', '32k',
+        '-frame_duration', '60',  # 60ms frame — khớp với OPUS_FRAME_DURATION_MS trong firmware
+        '-f', 'ogg',            # OGG container — OggDemuxer firmware đọc được
+        'pipe:1'
     ]
     process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     def stream():
         try:
             while True:
-                chunk = process.stdout.read(1024)
-                if not chunk: break
+                chunk = process.stdout.read(4096)
+                if not chunk:
+                    break
                 yield chunk
         finally:
             process.kill()
 
-    return StreamingResponse(stream(), media_type="audio/ogg")
+    return StreamingResponse(
+        stream(),
+        media_type="audio/ogg",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        }
+    )
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 def run_fastapi():
     port = int(os.environ.get("PORT", 10000))
@@ -62,7 +88,7 @@ async def handle_mcp():
             print("-> Đang kết nối tới XiaoZhi MCP Endpoint...")
             async with websockets.connect(MCP_URL, ping_interval=20, ping_timeout=10) as ws:
                 print("=== ĐÃ KẾT NỐI THÀNH CÔNG VỚI XIAOZHI! 🟢 ===\n")
-                
+
                 async for message in ws:
                     try:
                         data = json.loads(message)
@@ -70,7 +96,7 @@ async def handle_mcp():
                         payload = data.get("payload", data)
                         req_id = payload.get("id") if payload.get("id") is not None else data.get("id")
                         method = payload.get("method") or data.get("method")
-                        
+
                         def build_response(result_payload):
                             if session_id:
                                 return {"type": "mcp", "session_id": session_id, "payload": result_payload}
@@ -86,21 +112,28 @@ async def handle_mcp():
                                 "result": {
                                     "protocolVersion": "2024-11-05",
                                     "capabilities": {"tools": {}},
-                                    "serverInfo": {"name": "YouTube Music Server", "version": "1.0"}
+                                    "serverInfo": {"name": "YouTube Music Server", "version": "2.0"}
                                 }
                             }
                             await ws.send(json.dumps(build_response(res)))
-                            
+
                         elif method == "tools/list":
                             res = {
                                 "jsonrpc": "2.0", "id": req_id,
                                 "result": {
                                     "tools": [{
                                         "name": "play_youtube_music",
-                                        "description": "Tìm và phát nhạc từ YouTube. BẮT BUỘC phải đọc nguyên văn địa chỉ link âm thanh trong kết quả trả về.",
+                                        "description": (
+                                            "Tìm nhạc YouTube và phát TRỰC TIẾP qua loa ESP32. "
+                                            "Sau khi nhận được URL từ tool này, PHẢI gọi ngay MCP tool "
+                                            "'self.music.play' trên thiết bị với URL đó để phát nhạc qua loa. "
+                                            "KHÔNG đọc URL, KHÔNG mô tả URL — chỉ gọi self.music.play."
+                                        ),
                                         "inputSchema": {
                                             "type": "object",
-                                            "properties": {"query": {"type": "string", "description": "Tên bài hát"}},
+                                            "properties": {
+                                                "query": {"type": "string", "description": "Tên bài hát hoặc nghệ sĩ"}
+                                            },
                                             "required": ["query"]
                                         }
                                     }]
@@ -113,27 +146,33 @@ async def handle_mcp():
                             tool_name = params.get("name")
                             args = params.get("arguments", {})
                             query = args.get("query", "")
-                            
-                            print(f"-> [MCP Call] Đã nhận lệnh phát bài: {query}")
+
+                            print(f"-> [MCP Call] Tìm bài: {query}")
                             encoded_query = urllib.parse.quote(query)
-                            
+
                             domain = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else "https://d-n-g66p.onrender.com"
                             if not domain.startswith("http"):
                                 domain = "https://" + domain
                             audio_stream_url = f"{domain}/play?q={encoded_query}"
-                            
-                            # Yêu cầu LLM đọc lại nguyên văn URL để ESP32 bắt được link phát nhạc
-                            reply_text = f"Đã tìm thấy bài hát '{query}'. Đang mở đường dẫn: {audio_stream_url}"
+
+                            # Trả về URL stream để AI gọi self.music.play trên thiết bị
+                            # Dùng cấu trúc JSON rõ ràng để AI biết cần làm gì tiếp theo
+                            result_json = json.dumps({
+                                "found": True,
+                                "query": query,
+                                "stream_url": audio_stream_url,
+                                "instruction": "Gọi tool self.music.play với url này để phát nhạc qua loa"
+                            }, ensure_ascii=False)
 
                             res = {
                                 "jsonrpc": "2.0", "id": req_id,
                                 "result": {
-                                    "content": [{"type": "text", "text": reply_text}],
+                                    "content": [{"type": "text", "text": result_json}],
                                     "isError": False
                                 }
                             }
                             await ws.send(json.dumps(build_response(res)))
-                            print(f"-> [MCP Response Sent] Đã gửi link nhạc: {audio_stream_url}")
+                            print(f"-> [OK] Đã gửi stream URL: {audio_stream_url}")
 
                     except Exception as e:
                         print(f"Lỗi xử lý tin nhắn: {e}")
