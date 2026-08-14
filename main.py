@@ -18,12 +18,16 @@ app = FastAPI()
 
 def fetch_youtube_stream_url(query):
     ydl_opts = {
-        'format': 'bestaudio[ext=webm]/bestaudio/best',
+        'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best',
         'quiet': False,
         'no_warnings': False,
-        # Tránh bị block bởi YouTube
-        'extractor_args': {'youtube': {'skip': ['dash', 'hls']}},
-        'socket_timeout': 20,
+        'socket_timeout': 30,
+        # Dùng ANDROID_VR client — không cần JS runtime, ít bị block nhất
+        'extractor_args': {'youtube': {'player_client': ['tv_embedded']}},
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+        'geo_bypass': True,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -33,13 +37,15 @@ def fetch_youtube_stream_url(query):
                 video = info['entries'][0]
                 title = video.get('title', 'Unknown')
                 url = video.get('url')
-                print(f"[YT] Tìm thấy: {title} | URL length: {len(url) if url else 0}")
+                ext = video.get('ext', '?')
+                print(f"[YT] OK: {title} | ext={ext} | url={'ok' if url else 'NONE'}")
                 return title, url
             else:
-                print(f"[YT] Không tìm thấy kết quả cho: {query}")
+                print(f"[YT] Không có kết quả cho: {query}")
     except Exception as e:
         print(f"[YT ERROR] {type(e).__name__}: {e}")
     return None, None
+
 
 @app.get("/play")
 def play_music(q: str):
