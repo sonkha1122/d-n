@@ -17,16 +17,35 @@ RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://d-n-g66p.on
 app = FastAPI()
 
 def fetch_youtube_stream_url(query):
-    ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'no_warnings': True}
+    ydl_opts = {
+        'format': 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best',
+        'quiet': False,
+        'no_warnings': False,
+        'socket_timeout': 30,
+        # Dùng ANDROID_VR client — không cần JS runtime, ít bị block nhất
+        'extractor_args': {'youtube': {'player_client': ['tv_embedded']}},
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+        'geo_bypass': True,
+    }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            print(f"[YT] Tìm kiếm: {query}")
             info = ydl.extract_info(f"ytsearch1:{query}", download=False)
             if info and 'entries' in info and info['entries']:
                 video = info['entries'][0]
-                return video.get('title'), video.get('url')
+                title = video.get('title', 'Unknown')
+                url = video.get('url')
+                ext = video.get('ext', '?')
+                print(f"[YT] OK: {title} | ext={ext} | url={'ok' if url else 'NONE'}")
+                return title, url
+            else:
+                print(f"[YT] Không có kết quả cho: {query}")
     except Exception as e:
-        print(f"[Lỗi YT] {e}")
+        print(f"[YT ERROR] {type(e).__name__}: {e}")
     return None, None
+
 
 @app.get("/play")
 def play_music(q: str):
@@ -34,34 +53,49 @@ def play_music(q: str):
     Endpoint được ESP32 gọi trực tiếp qua HTTP để stream nhạc.
     Trả về OGG/Opus stream (ffmpeg -f ogg output) để OggDemuxer trên firmware parse được.
     """
+    print(f"[PLAY] Request: q={q}")
     title, audio_url = fetch_youtube_stream_url(q)
     if not audio_url:
-        raise HTTPException(status_code=404, detail="Khong tim thay bai hat")
+        print(f"[PLAY] Không tìm thấy bài: {q}")
+        raise HTTPException(status_code=404, detail=f"Khong tim thay bai hat: {q}")
 
     print(f"-> 🎵 [STREAM] Bài: {title}")
 
-    # QUAN TRỌNG: Dùng -f ogg (OGG container) thay vì -f opus (raw)
-    # OggDemuxer trong firmware ESP32 cần OGG container với header OggS
-    # ffmpeg mặc định xuất 60ms frame với -f ogg và libopus
     ffmpeg_cmd = [
-        'ffmpeg', '-i', audio_url,
-        '-ac', '1',             # Mono
-        '-ar', '24000',         # Sample rate 24kHz (khớp với AUDIO_OUTPUT_SAMPLE_RATE)
+        'ffmpeg',
+        '-reconnect', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '5',
+        '-i', audio_url,
+        '-ac', '1',              # Mono
+        '-ar', '24000',          # 24 kHz
         '-acodec', 'libopus',
         '-b:a', '32k',
-        '-frame_duration', '60',  # 60ms frame — khớp với OPUS_FRAME_DURATION_MS trong firmware
-        '-f', 'ogg',            # OGG container — OggDemuxer firmware đọc được
+        '-frame_duration', '60', # 60 ms frame
+        '-f', 'ogg',             # OGG container cho OggDemuxer
         'pipe:1'
     ]
-    process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    print(f"[FFMPEG] Bắt đầu stream...")
+    process = subprocess.Popen(
+        ffmpeg_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE   # Capture stderr để debug nếu cần
+    )
 
     def stream():
         try:
+            chunk_count = 0
             while True:
                 chunk = process.stdout.read(4096)
                 if not chunk:
                     break
+                chunk_count += 1
+                if chunk_count == 1:
+                    print(f"[FFMPEG] Đang stream (chunk đầu tiên OK)")
                 yield chunk
+            print(f"[FFMPEG] Stream xong, tổng {chunk_count} chunks")
+        except Exception as e:
+            print(f"[FFMPEG] Stream lỗi: {e}")
         finally:
             process.kill()
 
