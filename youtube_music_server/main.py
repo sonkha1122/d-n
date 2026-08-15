@@ -19,8 +19,9 @@ if sys.platform == "win32":
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 MCP_URL = os.environ.get("MCP_URL", "wss://api.xiaozhi.me/mcp/?token=YOUR_TOKEN_HERE")
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://d-n-g66p.onrender.com")
-ESP32_BT_BRIDGE_IP = os.environ.get("ESP32_BT_BRIDGE_IP", "")  # Điền IP con ESP32 Bluetooth (ví dụ: 192.168.1.50)
+SPACE_HOST = os.environ.get("SPACE_HOST", "")
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
+ESP32_BT_BRIDGE_IP = os.environ.get("ESP32_BT_BRIDGE_IP", "")  # Điền IP con ESP32 Bluetooth (ví dụ: 192.168.1.15)
 
 app = FastAPI(title="XiaoZhi Music Streaming Server")
 
@@ -322,9 +323,12 @@ async def handle_mcp():
                             args = params.get("arguments", {})
                             query = args.get("query", "")
 
-                            domain = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else "https://d-n-g66p.onrender.com"
-                            if not domain.startswith("http"):
-                                domain = "https://" + domain
+                            if SPACE_HOST:
+                                domain = f"https://{SPACE_HOST}"
+                            elif RENDER_EXTERNAL_URL:
+                                domain = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL.startswith("http") else f"https://{RENDER_EXTERNAL_URL}"
+                            else:
+                                domain = "https://d-n-g66p.onrender.com"
 
                             if tool_name == "play_youtube_music":
                                 print(f"-> [MCP Call] Mở nhạc trên bot: {query}")
