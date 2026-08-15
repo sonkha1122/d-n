@@ -127,9 +127,62 @@ def play_music(q: str):
             except Exception:
                 pass
 
+@app.get("/play_bt")
+def play_music_bluetooth(q: str):
+    """
+    Endpoint dành riêng cho ESP32 Bluetooth Bridge.
+    Trả về luồng âm thanh PCM 16-bit Stereo 44.1kHz (raw s16le)
+    để nạp thẳng vào Bluetooth A2DP Source mà không cần giải mã trên ESP32!
+    """
+    print(f"\n[REQUEST BT] Yêu cầu phát nhạc qua Bluetooth: '{q}'")
+    title, audio_url = fetch_music_stream_url(q)
+    if not audio_url:
+        print(f"[REQUEST BT] ❌ Không tìm thấy bài hát: '{q}'")
+        raise HTTPException(status_code=404, detail=f"Khong tim thay bài hat: {q}")
+
+    print(f"-> 🎵 [STREAMING BT] Đang mở luồng phát Bluetooth: {title}")
+
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
+        "-i", audio_url,
+        "-ac", "2",              # 2 kênh Stereo
+        "-ar", "44100",          # 44.1 kHz (Chuẩn Bluetooth A2DP)
+        "-f", "s16le",           # Raw 16-bit PCM little endian
+        "pipe:1"
+    ]
+
+    process = subprocess.Popen(
+        ffmpeg_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL
+    )
+
+    def stream():
+        try:
+            chunk_count = 0
+            while True:
+                chunk = process.stdout.read(4096)
+                if not chunk:
+                    break
+                chunk_count += 1
+                if chunk_count == 1:
+                    print(f"-> 🔊 [AUDIO BT] Luồng PCM Stereo bắt đầu truyền tới ESP32 Bluetooth!")
+                yield chunk
+            print(f"-> 🏁 [DONE BT] Kết thúc phát bài Bluetooth ({chunk_count} chunks).")
+        except Exception as e:
+            print(f"-> ⚠️ [ERROR BT] Lỗi stream: {e}")
+        finally:
+            try:
+                process.kill()
+            except Exception:
+                pass
+
     return StreamingResponse(
         stream(),
-        media_type="audio/ogg",
+        media_type="application/octet-stream",
         headers={
             "Cache-Control": "no-cache",
             "X-Content-Type-Options": "nosniff",
@@ -312,7 +365,7 @@ async def handle_mcp():
                             elif tool_name == "play_bluetooth_speaker":
                                 print(f"-> [MCP Call] Mở nhạc LOA BLUETOOTH: {query}")
                                 encoded_query = urllib.parse.quote(query)
-                                audio_stream_url = f"{domain}/play?q={encoded_query}"
+                                audio_stream_url = f"{domain}/play_bt?q={encoded_query}"
 
                                 send_cmd_to_esp32_bt(f"/play?url={urllib.parse.quote(audio_stream_url)}")
 
