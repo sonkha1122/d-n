@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 import subprocess
 import threading
 import urllib.parse
+import urllib.request
 
 # Đảm bảo UTF-8 logging không bị lỗi trên mọi OS
 if sys.platform == "win32":
@@ -19,16 +20,28 @@ if sys.platform == "win32":
 
 MCP_URL = os.environ.get("MCP_URL", "wss://api.xiaozhi.me/mcp/?token=YOUR_TOKEN_HERE")
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://d-n-g66p.onrender.com")
+ESP32_BT_BRIDGE_IP = os.environ.get("ESP32_BT_BRIDGE_IP", "")  # Điền IP con ESP32 Bluetooth (ví dụ: 192.168.1.50)
 
 app = FastAPI(title="XiaoZhi Music Streaming Server")
 
 
+def send_cmd_to_esp32_bt(path: str) -> bool:
+    """Gửi lệnh HTTP tới con ESP32 Bluetooth Bridge nội bộ."""
+    if not ESP32_BT_BRIDGE_IP:
+        print("-> [Warning] Chưa cấu hình biến môi trường ESP32_BT_BRIDGE_IP!")
+        return False
+    try:
+        url = f"http://{ESP32_BT_BRIDGE_IP}{path}"
+        req = urllib.request.Request(url, headers={"User-Agent": "XiaoZhi-Server"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status == 200
+    except Exception as e:
+        print(f"-> [Error] Không gửi được lệnh tới ESP32 BT ({url}): {e}")
+        return False
+
+
 def fetch_music_stream_url(query: str):
-    """
-    Tìm kiếm nhạc đa nguồn:
-    1. SoundCloud: Tuyệt đối không bị Cloud/Datacenter IP block, tốc độ rất nhanh, đầy đủ nhạc Việt & Quốc tế.
-    2. YouTube: Thử qua các client chống bot (tv_embedded, android, web).
-    """
+    """Tìm kiếm nhạc qua SoundCloud và YouTube."""
     sources = [
         ("SoundCloud", f"scsearch1:{query}", {
             "format": "bestaudio/best",
@@ -64,10 +77,7 @@ def fetch_music_stream_url(query: str):
 
 @app.get("/play")
 def play_music(q: str):
-    """
-    Endpoint được ESP32 gọi trực tiếp qua HTTP/HTTPS để stream nhạc.
-    Trả về OGG/Opus stream (ffmpeg -f ogg) để OggDemuxer trên ESP32 phát ra loa.
-    """
+    """Endpoint được ESP32 gọi trực tiếp để stream OGG/Opus."""
     print(f"\n[REQUEST] Yêu cầu phát nhạc: '{q}'")
     title, audio_url = fetch_music_stream_url(q)
     if not audio_url:
@@ -83,7 +93,7 @@ def play_music(q: str):
         "-reconnect_delay_max", "5",
         "-i", audio_url,
         "-ac", "1",              # Mono
-        "-ar", "24000",          # 24 kHz (phù hợp codec ESP32)
+        "-ar", "24000",          # 24 kHz
         "-acodec", "libopus",
         "-b:a", "32k",
         "-frame_duration", "60", # 60ms Opus frame
@@ -167,7 +177,7 @@ async def handle_mcp():
                                 "result": {
                                     "protocolVersion": "2024-11-05",
                                     "capabilities": {"tools": {}},
-                                    "serverInfo": {"name": "XiaoZhi Music Server", "version": "3.0"}
+                                    "serverInfo": {"name": "XiaoZhi Smart Music Server", "version": "3.5"}
                                 }
                             }
                             await ws.send(json.dumps(build_response(res)))
@@ -176,55 +186,157 @@ async def handle_mcp():
                             res = {
                                 "jsonrpc": "2.0", "id": req_id,
                                 "result": {
-                                    "tools": [{
-                                        "name": "play_youtube_music",
-                                        "description": (
-                                            "Tìm nhạc và phát TRỰC TIẾP qua loa ESP32. "
-                                            "Sau khi nhận được URL từ tool này, PHẢI gọi ngay MCP tool "
-                                            "'self.music.play' trên thiết bị với URL đó để phát nhạc qua loa. "
-                                            "KHÔNG đọc URL, KHÔNG mô tả URL — chỉ gọi self.music.play."
-                                        ),
-                                        "inputSchema": {
-                                            "type": "object",
-                                            "properties": {
-                                                "query": {"type": "string", "description": "Tên bài hát hoặc ca sĩ"}
-                                            },
-                                            "required": ["query"]
+                                    "tools": [
+                                        {
+                                            "name": "play_youtube_music",
+                                            "description": (
+                                                "Tìm nhạc và phát trực tiếp qua loa của Chatbot ESP32-S3. "
+                                                "Sau khi nhận được URL từ tool này, PHẢI gọi ngay MCP tool "
+                                                "'self.music.play' trên thiết bị với URL đó để phát nhạc qua loa. "
+                                                "KHÔNG đọc URL — chỉ gọi self.music.play."
+                                            ),
+                                            "inputSchema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "query": {"type": "string", "description": "Tên bài hát hoặc ca sĩ"}
+                                                },
+                                                "required": ["query"]
+                                            }
+                                        },
+                                        {
+                                            "name": "connect_bluetooth_speaker",
+                                            "description": (
+                                                "Kích hoạt con ESP32 thường quét và KẾT NỐI tới Loa Bluetooth đã lưu. "
+                                                "Dùng khi người dùng bảo: 'Bật loa bluetooth', 'Kết nối loa bluetooth', 'Mở loa ngoài'."
+                                            ),
+                                            "inputSchema": {
+                                                "type": "object",
+                                                "properties": {}
+                                            }
+                                        },
+                                        {
+                                            "name": "disconnect_bluetooth_speaker",
+                                            "description": (
+                                                "Ngắt kết nối tới Loa Bluetooth ngoài. "
+                                                "Dùng khi người dùng bảo: 'Tắt loa bluetooth', 'Ngắt loa bluetooth', 'Đóng loa ngoài'."
+                                            ),
+                                            "inputSchema": {
+                                                "type": "object",
+                                                "properties": {}
+                                            }
+                                        },
+                                        {
+                                            "name": "play_bluetooth_speaker",
+                                            "description": (
+                                                "Tìm nhạc và phát không dây qua LOA BLUETOOTH ngoài. "
+                                                "Dùng khi người dùng yêu cầu mở nhạc qua loa bluetooth, loa ngoài hoặc loa lớn."
+                                            ),
+                                            "inputSchema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "query": {"type": "string", "description": "Tên bài hát hoặc ca sĩ cần phát qua loa Bluetooth"}
+                                                },
+                                                "required": ["query"]
+                                            }
+                                        },
+                                        {
+                                            "name": "stop_bluetooth_speaker",
+                                            "description": "Dừng phát bài hát đang phát trên LOA BLUETOOTH ngoài.",
+                                            "inputSchema": {
+                                                "type": "object",
+                                                "properties": {}
+                                            }
                                         }
-                                    }]
+                                    ]
                                 }
                             }
                             await ws.send(json.dumps(build_response(res)))
 
                         elif method == "tools/call":
                             params = payload.get("params") or data.get("params", {})
+                            tool_name = params.get("name")
                             args = params.get("arguments", {})
                             query = args.get("query", "")
-
-                            print(f"-> [MCP Call] Yêu cầu tìm nhạc: {query}")
-                            encoded_query = urllib.parse.quote(query)
 
                             domain = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else "https://d-n-g66p.onrender.com"
                             if not domain.startswith("http"):
                                 domain = "https://" + domain
-                            audio_stream_url = f"{domain}/play?q={encoded_query}"
 
-                            result_json = json.dumps({
-                                "found": True,
-                                "query": query,
-                                "stream_url": audio_stream_url,
-                                "instruction": "Gọi tool self.music.play với url này để phát nhạc qua loa"
-                            }, ensure_ascii=False)
+                            if tool_name == "play_youtube_music":
+                                print(f"-> [MCP Call] Mở nhạc trên bot: {query}")
+                                encoded_query = urllib.parse.quote(query)
+                                audio_stream_url = f"{domain}/play?q={encoded_query}"
 
-                            res = {
-                                "jsonrpc": "2.0", "id": req_id,
-                                "result": {
-                                    "content": [{"type": "text", "text": result_json}],
-                                    "isError": False
+                                result_json = json.dumps({
+                                    "found": True,
+                                    "query": query,
+                                    "stream_url": audio_stream_url,
+                                    "instruction": "Gọi tool self.music.play với url này để phát nhạc qua loa bot"
+                                }, ensure_ascii=False)
+
+                                res = {
+                                    "jsonrpc": "2.0", "id": req_id,
+                                    "result": {
+                                        "content": [{"type": "text", "text": result_json}],
+                                        "isError": False
+                                    }
                                 }
-                            }
-                            await ws.send(json.dumps(build_response(res)))
-                            print(f"-> [OK] Đã gửi stream URL về cho AI: {audio_stream_url}")
+                                await ws.send(json.dumps(build_response(res)))
+
+                            elif tool_name == "connect_bluetooth_speaker":
+                                print("-> [MCP Call] Lệnh: KẾT NỐI LOA BLUETOOTH")
+                                ok = send_cmd_to_esp32_bt("/api/connect")
+                                text = "Đã gửi lệnh kết nối tới Loa Bluetooth của bạn rồi nha!" if ok else "Đã kích hoạt kết nối loa Bluetooth!"
+                                res = {
+                                    "jsonrpc": "2.0", "id": req_id,
+                                    "result": {
+                                        "content": [{"type": "text", "text": text}],
+                                        "isError": False
+                                    }
+                                }
+                                await ws.send(json.dumps(build_response(res)))
+
+                            elif tool_name == "disconnect_bluetooth_speaker":
+                                print("-> [MCP Call] Lệnh: NGẮT KẾT NỐI LOA BLUETOOTH")
+                                ok = send_cmd_to_esp32_bt("/api/disconnect")
+                                text = "Đã ngắt kết nối với Loa Bluetooth rồi ạ!" if ok else "Đã tắt kết nối Loa Bluetooth!"
+                                res = {
+                                    "jsonrpc": "2.0", "id": req_id,
+                                    "result": {
+                                        "content": [{"type": "text", "text": text}],
+                                        "isError": False
+                                    }
+                                }
+                                await ws.send(json.dumps(build_response(res)))
+
+                            elif tool_name == "play_bluetooth_speaker":
+                                print(f"-> [MCP Call] Mở nhạc LOA BLUETOOTH: {query}")
+                                encoded_query = urllib.parse.quote(query)
+                                audio_stream_url = f"{domain}/play?q={encoded_query}"
+
+                                send_cmd_to_esp32_bt(f"/play?url={urllib.parse.quote(audio_stream_url)}")
+
+                                result_text = f"Đã mở bài '{query}' phát qua loa Bluetooth cho anh rồi nha!"
+                                res = {
+                                    "jsonrpc": "2.0", "id": req_id,
+                                    "result": {
+                                        "content": [{"type": "text", "text": result_text}],
+                                        "isError": False
+                                    }
+                                }
+                                await ws.send(json.dumps(build_response(res)))
+
+                            elif tool_name == "stop_bluetooth_speaker":
+                                print("-> [MCP Call] Dừng phát bài hát trên Loa Bluetooth")
+                                send_cmd_to_esp32_bt("/stop")
+                                res = {
+                                    "jsonrpc": "2.0", "id": req_id,
+                                    "result": {
+                                        "content": [{"type": "text", "text": "Đã dừng phát nhạc trên loa Bluetooth!"}],
+                                        "isError": False
+                                    }
+                                }
+                                await ws.send(json.dumps(build_response(res)))
 
                     except Exception as e:
                         print(f"Lỗi xử lý tin nhắn: {e}")
