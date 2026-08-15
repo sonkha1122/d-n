@@ -127,6 +127,17 @@ def play_music(q: str):
             except Exception:
                 pass
 
+    return StreamingResponse(
+        stream(),
+        media_type="audio/ogg",
+        headers={
+            "Content-Type": "audio/ogg",
+            "Cache-Control": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        }
+    )
+
+
 @app.get("/play_bt")
 def play_music_bluetooth(q: str):
     """
